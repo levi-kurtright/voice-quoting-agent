@@ -1,0 +1,20 @@
+{
+  "type": "webhook",
+  "name": "calculate_quote",
+  "description": "Prices a dealer's order. Call this after confirming the items and quantities with the caller. Returns line prices, volume discounts, the one-time total, any monthly subscription total, a quote number, and whether manager approval is required. Never calculate prices yourself.",
+  "method": "POST",
+  "url": "https://<your-pricing-service>/quote",
+  "body": {
+    "dealer_id": { "type": "string", "required": false, "description": "The caller's dealer number, for example D-1042" },
+    "extra_discount_pct": { "type": "number", "required": true, "description": "Extra discount percentage the caller asked for, beyond volume discounts. Use 0 if none." },
+    "lines": {
+      "type": "array",
+      "required": true,
+      "description": "Products and quantities on the order",
+      "items": {
+        "sku": { "type": "string", "required": true, "description": "DESK-STD, DESK-SIT, CHAIR-ERG, PRINTER-MFP, PAPER-CASE, TONER-SUB, or INSTALL" },
+        "qty": { "type": "number", "required": true, "description": "Quantity ordered" }
+      }
+    }
+  }
+}
