@@ -1,0 +1,53 @@
+{
+  "type": "webhook",
+  "name": "accept_quote",
+  "description": "Accepts a Stripe quote. Stripe then automatically creates the invoice, and a subscription for any monthly items. Call this only when the caller clearly says they accept the quote, either one you just created on this call or one they read out from an earlier call. Read back the spoken_summary verbatim. Never invent invoice numbers.",
+  "disable_interruptions": false,
+  "interruption_mode": "allow",
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "tool_error_handling_mode": "auto",
+  "execution_mode": "immediate",
+  "follow_redirects": false,
+  "follow_redirects_allowed_domains": [],
+  "api_schema": {
+    "url": "https://YOUR-STRIPE-VAL.web.val.run/quote/accept",
+    "method": "POST",
+    "path_params_schema": [],
+    "query_params_schema": [],
+    "request_body_schema": {
+      "id": "body",
+      "type": "object",
+      "description": "The quote to accept",
+      "properties": [
+        {
+          "id": "quote_number",
+          "type": "string",
+          "value_type": "llm_prompt",
+          "description": "The Stripe quote number, for example QT-G1O1OVID-0002-1, exactly as returned by send_quote or as the caller reads it",
+          "dynamic_variable": "",
+          "constant_value": "",
+          "enum": null,
+          "is_system_provided": false,
+          "required": true
+        }
+      ],
+      "required": false,
+      "dynamic_variable": "",
+      "value_type": "llm_prompt"
+    },
+    "request_headers": [],
+    "content_type": "application/json",
+    "auth_connection": null,
+    "mtls_auth_connection": null,
+    "response_filter": null
+  },
+  "assignments": [],
+  "response_timeout_secs": 30,
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  },
+  "response_mocks": []
+}

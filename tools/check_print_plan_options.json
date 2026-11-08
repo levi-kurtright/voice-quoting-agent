@@ -1,0 +1,85 @@
+{
+  "type": "webhook",
+  "name": "check_print_plan_options",
+  "description": "Compares a managed print dealer's current billing period on the 5K and 25K print plans using their real page usage from Stripe, and says which plan fits. Read-only; never changes anything. Call it when a caller on a managed print plan asks about more included pages, a bigger or smaller print plan, or whether another plan would save money. Pass dealer. Read back the spoken_summary word for word; the figures are estimates, say so.",
+  "disable_interruptions": false,
+  "interruption_mode": "allow",
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "tool_error_handling_mode": "auto",
+  "execution_mode": "immediate",
+  "follow_redirects": false,
+  "follow_redirects_allowed_domains": [],
+  "api_schema": {
+    "url": "https://YOUR-STRIPE-VAL.web.val.run/usage/plan-options",
+    "method": "POST",
+    "path_params_schema": [],
+    "query_params_schema": [],
+    "request_body_schema": {
+      "id": "body",
+      "type": "object",
+      "description": "Request body",
+      "properties": [
+        {
+          "id": "dealer",
+          "type": "object",
+          "description": "The caller's account. Provide at least one identifier.",
+          "properties": [
+            {
+              "id": "id",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Dealer number, for example D-1042",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            },
+            {
+              "id": "email",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Email on the account",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            },
+            {
+              "id": "name",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Company or dealer name",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            }
+          ],
+          "required": false,
+          "dynamic_variable": "",
+          "value_type": "llm_prompt"
+        }
+      ],
+      "required": false,
+      "dynamic_variable": "",
+      "value_type": "llm_prompt"
+    },
+    "request_headers": [],
+    "content_type": "application/json",
+    "auth_connection": null,
+    "mtls_auth_connection": null,
+    "response_filter": null
+  },
+  "assignments": [],
+  "response_timeout_secs": 30,
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  },
+  "response_mocks": []
+}

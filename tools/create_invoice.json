@@ -1,0 +1,191 @@
+{
+  "type": "webhook",
+  "name": "create_invoice",
+  "description": "Creates a real Stripe invoice (and a subscription for any monthly items) from a confirmed quote. Call this only after the caller has confirmed the quote and asked to be invoiced. Pass the dealer details and the exact lines array returned by calculate_quote. Returns a Stripe invoice number, a hosted pay-online link, and a spoken_summary that you read back to the caller verbatim. Never invent invoice numbers or payment links.",
+  "disable_interruptions": false,
+  "interruption_mode": "allow",
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "tool_error_handling_mode": "auto",
+  "execution_mode": "immediate",
+  "follow_redirects": false,
+  "follow_redirects_allowed_domains": [],
+  "api_schema": {
+    "url": "https://YOUR-STRIPE-VAL.web.val.run",
+    "method": "POST",
+    "path_params_schema": [],
+    "query_params_schema": [],
+    "request_body_schema": {
+      "id": "body",
+      "type": "object",
+      "description": "The confirmed quote to invoice",
+      "properties": [
+        {
+          "id": "quote_id",
+          "type": "string",
+          "value_type": "llm_prompt",
+          "description": "The quote_id returned by calculate_quote, for example Q-204815",
+          "dynamic_variable": "",
+          "constant_value": "",
+          "enum": null,
+          "is_system_provided": false,
+          "required": true
+        },
+        {
+          "id": "dealer",
+          "type": "object",
+          "description": "The caller's dealer details",
+          "properties": [
+            {
+              "id": "id",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Dealer number, for example D-1042",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            },
+            {
+              "id": "name",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Dealer or company name",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": true
+            },
+            {
+              "id": "email",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Email for the invoice, if the caller gives one",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            },
+            {
+              "id": "phone",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Caller's phone number in E.164 format, for example +14175550142",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            }
+          ],
+          "required": true,
+          "dynamic_variable": "",
+          "value_type": "llm_prompt"
+        },
+        {
+          "id": "lines",
+          "type": "array",
+          "description": "The exact lines array returned by calculate_quote",
+          "items": {
+            "id": "lines_item",
+            "type": "object",
+            "description": "One quote line",
+            "properties": [
+              {
+                "id": "product",
+                "type": "string",
+                "value_type": "llm_prompt",
+                "description": "Product name",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": true
+              },
+              {
+                "id": "qty",
+                "type": "number",
+                "value_type": "llm_prompt",
+                "description": "Quantity",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": true
+              },
+              {
+                "id": "unit_net",
+                "type": "number",
+                "value_type": "llm_prompt",
+                "description": "Net unit price after discounts, in dollars",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": true
+              },
+              {
+                "id": "billing",
+                "type": "string",
+                "value_type": "llm_prompt",
+                "description": "one_time or monthly",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": true
+              },
+              {
+                "id": "volume_discount_pct",
+                "type": "number",
+                "value_type": "llm_prompt",
+                "description": "Volume discount percent applied, if any",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": false
+              },
+              {
+                "id": "extra_discount_pct",
+                "type": "number",
+                "value_type": "llm_prompt",
+                "description": "Extra discount percent applied, if any",
+                "dynamic_variable": "",
+                "constant_value": "",
+                "enum": null,
+                "is_system_provided": false,
+                "required": false
+              }
+            ],
+            "required": false,
+            "dynamic_variable": "",
+            "value_type": "llm_prompt"
+          },
+          "required": true,
+          "dynamic_variable": "",
+          "value_type": "llm_prompt"
+        }
+      ],
+      "required": false,
+      "dynamic_variable": "",
+      "value_type": "llm_prompt"
+    },
+    "request_headers": [],
+    "content_type": "application/json",
+    "auth_connection": null,
+    "mtls_auth_connection": null,
+    "response_filter": null
+  },
+  "assignments": [],
+  "response_timeout_secs": 30,
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  },
+  "response_mocks": []
+}
