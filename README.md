@@ -11,7 +11,7 @@ Built for a fictional office products distributor, **Summit Office Supply**. All
 
 ## Architecture
 ```
-Caller ──voice──▶ Quinn / Riley (ElevenLabs ElevenAgents)
+Caller ──voice──▶ Quinn / Riley (ElevenLabs ElevenAgents, Claude Haiku 5.5)
                        │ webhook tools (JSON schemas in tools/)
                        ▼
         Pricing service (service/pricing_api.ts)         catalog, volume tiers, approval rules
