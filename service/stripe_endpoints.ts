@@ -5,11 +5,13 @@
 //   core.ts              shared Stripe helpers (client, money/date formatting, customer and invoice lookup)
 //   print.ts             managed print plans on Stripe Billing meters, plan switches, test-clock demo
 //   recovery.ts          failed card payments, Stripe retries, recovery test-clock demo
-//   followups.ts         tracked specialist follow-ups (Val Town SQLite) + GET /followups queue page
+//   followups.ts         tracked specialist follow-ups + Stripe activity log (Val Town SQLite), GET /followups
+//   native.ts            Stripe webhooks, prepaid print credits (Billing credit grants), Stripe Tax + webhook setup
+//   dashboard.ts         GET /dashboard: live revenue view from Stripe and the call logs
 //
 // Routes (POST unless noted). Every spoken answer is built from Stripe's own fields.
 //   /                     Quinn  create an invoice (+ subscription) directly from a confirmed quote
-//   /quote                Quinn  create a finalized Stripe Quote, optionally with a validated promo code
+//   /quote                Quinn  create a finalized Stripe Quote (Stripe Tax from the ship-to ZIP), optional promo code
 //   /quote/accept         Quinn  accept a quote; Stripe generates the invoice and subscription
 //   GET /quote-pdf/:id           Stripe-rendered quote PDF
 //   /promo/check          Quinn  validate a promotion code (read-only)
@@ -22,8 +24,14 @@
 //   /usage                Riley  print usage this period + Stripe's next-invoice preview (read-only)
 //   /credit/preview       Riley  preview a credit note against phone policy (read-only)
 //   /credit/issue         Riley  issue the credit note after the caller confirms
+//   /credits/buy          Quinn  sell prepaid print credit (reads back first; creates the invoice on confirmed: true)
+//   /credits              Riley  prepaid print credit balance from Stripe Billing credits (read-only)
+//   /payment/link         Riley  have Stripe email the invoice's secure payment page to the billing email on file
+//   /payment/retry        Riley  after the owner updates the card, have Stripe retry a failed charge now (confirmed: true)
 //   /followup             both   log a tracked specialist follow-up;  GET /followups lists them
-//   /usage/setup, /usage/report, /demo/clock, /demo/dunning   admin + simulated printer feed (test mode)
+//   /stripe/webhook       Stripe invoice.paid / invoice.payment_failed -> follow-ups, credit grants, activity log
+//   GET /dashboard               live revenue dashboard
+//   /usage/setup, /usage/report, /demo/clock, /demo/dunning, /demo/stripe-setup, /demo/pay-invoice   admin + simulated printer feed (test mode)
 //
 // Requires env var:  STRIPE_SECRET_KEY = sk_test_...   (TEST mode). Never hard-code it.
 // Write calls use Stripe idempotency keys, so a retried "yes" never bills twice.
@@ -31,7 +39,9 @@
 import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, money, productFor } from "./core.ts";
 import { followupsPage, logFollowUp } from "./followups.ts";
 import { changePrintPlan, demoClock, explainUsageInvoice, lookupPrintUsage, printPlanOptions, reportPrintUsage, setupPrintPlan } from "./print.ts";
-import { demoDunning, paymentFailureLine } from "./recovery.ts";
+import { demoDunning, paymentFailureLine, retryPayment, sendPaymentLink } from "./recovery.ts";
+import { buyPrintCredits, demoPayInvoice, handleStripeWebhook, lookupPrintCredits, stripeSetup, taxActive } from "./native.ts";
+import { dashboardPage } from "./dashboard.ts";
 
 /* ---------------------------------------------------------------- Quinn: create invoice */
 
@@ -177,7 +187,11 @@ function quoteFacts(q: Stripe.Quote) {
   const upfront = q.computed?.upfront?.amount_total ?? q.amount_total ?? 0;
   const monthly = q.computed?.recurring?.amount_total ?? 0;
   const discount = q.computed?.upfront?.total_details?.amount_discount ?? q.total_details?.amount_discount ?? 0;
+  const taxFirst = q.computed?.upfront?.total_details?.amount_tax ?? q.total_details?.amount_tax ?? 0;
+  const taxMonthly = q.computed?.recurring?.total_details?.amount_tax ?? 0;
   return {
+    tax_enabled: !!q.automatic_tax?.enabled, tax_first_invoice: taxFirst / 100, tax_monthly: taxMonthly / 100,
+    one_time_before_tax: ((upfront - taxFirst) - (monthly - taxMonthly)) / 100, monthly_before_tax: (monthly - taxMonthly) / 100,
     quote_number: q.number, stripe_quote_id: q.id, status: q.status,
     one_time_total: (upfront - monthly) / 100, monthly_total: monthly / 100,
     first_invoice_total: upfront / 100, first_invoice_discount: discount / 100,
@@ -251,6 +265,23 @@ async function createStripeQuote(body: any) {
 
   const customer = await findOrCreateCustomer(stripe, dealer, customerKey);
 
+  // Stripe Tax needs the ship-to location. Quinn asks for the ZIP code; Stripe validates it before we quote.
+  const taxOn = await taxActive(stripe);
+  if (taxOn) {
+    const zip = String(dealer?.postal_code ?? "").replace(/[^0-9]/g, "").slice(0, 5);
+    const spokenZip = zip.split("").join(" ");
+    if (zip.length === 5 && zip !== customer.address?.postal_code) {
+      try {
+        await stripe.customers.update(customer.id, { address: { country: "US", postal_code: zip }, tax: { validate_location: "immediately" } });
+        customer.address = { ...(customer.address ?? {}), country: "US", postal_code: zip } as Stripe.Address;
+      } catch (_e) {
+        return { ok: true, needs_postal_code: true, spoken_summary: `I couldn't match ZIP code ${spokenZip} for sales tax. Could you read me the ZIP code the order ships to again?` };
+      }
+    } else if (!customer.address?.postal_code) {
+      return { ok: true, needs_postal_code: true, spoken_summary: `Before I write up the quote, what's the ZIP code the order ships to? I need it to calculate sales tax.` };
+    }
+  }
+
   // Validate the promo before touching the quote, so a bad code never replaces a good quote.
   let promo: Awaited<ReturnType<typeof resolvePromo>> | null = null;
   if (promoWanted) {
@@ -282,6 +313,7 @@ async function createStripeQuote(body: any) {
       quantity: l.qty,
       price_data: {
         currency: "usd", product: await productFor(stripe, l.product), unit_amount: cents(l.unit_net),
+        ...(taxOn ? { tax_behavior: "exclusive" as const } : {}),
         ...(l.billing === "monthly" ? { recurring: { interval: "month" as const } } : {}),
       },
     });
@@ -292,7 +324,8 @@ async function createStripeQuote(body: any) {
     customer: customer.id, line_items,
     collection_method: "send_invoice", invoice_settings: { days_until_due: 30 },
     header: "Summit Office Supply order quote",
-    description: `Quoted by phone via Quinn. Net prices${discounts ? ` include: ${discounts}` : ""}.${promo?.valid ? ` Promo ${promo.code}: ${promo.terms}.` : ""} Prices exclude tax.`.slice(0, 500),
+    description: `Quoted by phone via Quinn. Net prices${discounts ? ` include: ${discounts}` : ""}.${promo?.valid ? ` Promo ${promo.code}: ${promo.terms}.` : ""}${taxOn ? " Sales tax calculated by Stripe Tax." : " Prices exclude tax."}`.slice(0, 500),
+    ...(taxOn ? { automatic_tax: { enabled: true } } : {}),
     footer: `Pricing reference ${quoteId}`,
     metadata: { quote_id: quoteId, source: "quinn_voice_agent", promo_code: promo?.valid ? promo.code : "" },
     subscription_data: { metadata: { quote_id: quoteId, source: "quinn_voice_agent", term_months: "12", promo_code: promo?.valid ? promo.code : "" } },
@@ -316,9 +349,17 @@ async function createStripeQuote(body: any) {
   const quote_lines = li.data.map((x) => ({ description: x.description, quantity: x.quantity, total: x.amount_total / 100, billing: x.price?.type === "recurring" ? "monthly" : "one_time" }));
 
   const parts: string[] = [];
-  if (f.one_time_total) parts.push(`${money(cents(f.one_time_total))} one-time`);
-  if (f.monthly_total) parts.push(`${money(cents(f.monthly_total))} a month`);
-  let spoken = `Quote ${f.quote_number} is ready: ${parts.join(" plus ")}.`;
+  const oneTime = f.tax_enabled ? f.one_time_before_tax : f.one_time_total, monthlyAmt = f.tax_enabled ? f.monthly_before_tax : f.monthly_total;
+  if (oneTime) parts.push(`${money(cents(oneTime))} one-time`);
+  if (monthlyAmt) parts.push(`${money(cents(monthlyAmt))} a month`);
+  let spoken = `Quote ${f.quote_number} is ready: ${parts.join(" plus ")}${f.tax_enabled ? " before tax" : ""}.`;
+  // Stripe Tax: speak Stripe's own tax amounts and totals.
+  const taxLine = !f.tax_enabled ? ""
+    : f.tax_first_invoice
+      ? ` Sales tax is ${money(cents(f.tax_first_invoice))} on the first invoice, for a first-invoice total of ${money(cents(f.first_invoice_total))}`
+        + (f.monthly_total ? `, then ${money(cents(f.monthly_total))} a month including ${money(cents(f.tax_monthly))} tax.` : ".")
+      : ` Stripe Tax calculated no sales tax for that ship-to ZIP code.`;
+  spoken += taxLine;
   let discounted_monthly: number | null = null;
   if (promo?.valid) {
     // With a promo, Stripe spreads the discount over the whole first invoice, so speak that invoice's total
@@ -326,19 +367,20 @@ async function createStripeQuote(body: any) {
     const c = promo.coupon;
     const firstInv = money(cents(f.first_invoice_total));
     const saved = f.first_invoice_discount ? `, saving ${money(cents(f.first_invoice_discount))}` : "";
-    const full = money(cents(f.monthly_total));
+    const full = money(cents(f.tax_enabled ? f.monthly_before_tax : f.monthly_total)) + (f.tax_enabled ? " before tax" : "");
     spoken = f.monthly_total
       ? `Quote ${f.quote_number} is ready. With promo code ${promo.code}, your first invoice, which covers the one-time items and your first month, is ${firstInv}${saved}.`
       : `Quote ${f.quote_number} is ready: ${firstInv} with promo code ${promo.code}${saved}.`;
+    if (f.tax_enabled) spoken += f.tax_first_invoice ? ` That total includes ${money(cents(f.tax_first_invoice))} sales tax.` : ` Stripe Tax calculated no sales tax for that ship-to ZIP code.`;
     if (f.monthly_total) {
-      const m = cents(f.monthly_total);
+      const m = cents(f.tax_enabled ? f.monthly_before_tax : f.monthly_total);
       const off = c.duration === "once" ? 0 : c.percent_off ? Math.round(m * c.percent_off / 100) : Math.min(m, c.amount_off ?? 0);
       if (off) discounted_monthly = (m - off) / 100;
       spoken += !off ? ` After that it's ${full} a month.`
         : c.duration === "repeating" && (c.duration_in_months ?? 0) > 1
-          ? ` After that, your monthly invoices are ${money(m - off)} through month ${c.duration_in_months}, then ${full} a month.`
+          ? ` After that, your monthly invoices are ${money(m - off)}${f.tax_enabled ? " before tax" : ""} through month ${c.duration_in_months}, then ${full} a month.`
           : c.duration === "repeating" ? ` After that it's ${full} a month.`
-          : ` After that it's ${money(m - off)} a month with the promo.`;
+          : ` After that it's ${money(m - off)} a month with the promo${f.tax_enabled ? ", before tax" : ""}.`;
     }
   }
   return { ok: true, ...f, promo_applied: !!promo?.valid, discounted_monthly, quote_lines,
@@ -727,6 +769,8 @@ export default async function (req: Request): Promise<Response> {
   }
 
   if (req.method === "GET" && path.endsWith("/followups")) return await followupsPage();
+  if (req.method === "GET" && path.endsWith("/dashboard") && key) return await dashboardPage();
+  if (req.method === "POST" && path.endsWith("/stripe/webhook") && key) return await handleStripeWebhook(req);
 
   if (req.method !== "POST")
     return json({ service: "Summit Office Supply Stripe endpoints", routes: {
@@ -750,6 +794,14 @@ export default async function (req: Request): Promise<Response> {
       "POST /demo/dunning": "Admin: card-billed test-clock dealer for failed-payment recovery",
       "POST /followup": "Quinn and Riley: log a tracked specialist follow-up",
       "GET /followups": "Open follow-up queue (HTML)",
+      "GET /dashboard": "Live revenue dashboard (HTML)",
+      "POST /credits/buy": "Quinn: sell prepaid print credit (confirmed: true to invoice)",
+      "POST /credits": "Riley: prepaid print credit balance (read-only)",
+      "POST /payment/link": "Riley: have Stripe email the invoice's secure payment page",
+      "POST /payment/retry": "Riley: have Stripe retry a failed card payment now (confirmed: true)",
+      "POST /stripe/webhook": "Stripe events: invoice.paid, invoice.payment_failed",
+      "POST /demo/stripe-setup": "Admin: Stripe Tax settings + registration, webhook endpoint",
+      "POST /demo/pay-invoice": "Admin: mark an emailed invoice paid by check (test mode)",
     } });
   if (!key) return json({ error: "STRIPE_SECRET_KEY is not set" }, 500);
   let body: any = {};
@@ -769,6 +821,12 @@ export default async function (req: Request): Promise<Response> {
       : path.endsWith("/usage/plan-change") ? await changePrintPlan(body)
       : path.endsWith("/demo/clock") ? await demoClock(body)
       : path.endsWith("/demo/dunning") ? await demoDunning(body)
+      : path.endsWith("/demo/stripe-setup") ? await stripeSetup(ORIGIN)
+      : path.endsWith("/demo/pay-invoice") ? await demoPayInvoice(body)
+      : path.endsWith("/credits/buy") ? await buyPrintCredits(body)
+      : path.endsWith("/credits") ? await lookupPrintCredits(body)
+      : path.endsWith("/payment/link") ? await sendPaymentLink(body)
+      : path.endsWith("/payment/retry") ? await retryPayment(body)
       : path.endsWith("/followup") ? await logFollowUp({ ...body, agent: body?.agent ?? url.searchParams.get("agent") ?? "" }, async (d) => {
         const c = await findCustomer(getStripe(), d);
         return c ? { id: c.metadata?.dealer_id, name: c.name ?? undefined } : null;

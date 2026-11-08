@@ -52,6 +52,61 @@ export async function logFollowUp(body: any, resolveDealer: (d: any) => Promise<
     spoken_summary: `I've logged this for a billing specialist, and they'll follow up with you. Your reference number is ${ref}.` };
 }
 
+export async function hasOpenFollowUp(dealerId: string, reason: string): Promise<string | null> {
+  if (!dealerId) return null;
+  const r = rowsOf(await (await followupDb()).execute({ sql: `SELECT id FROM followups WHERE dealer_id = ? AND reason = ? AND status = 'open' ORDER BY id DESC LIMIT 1`, args: [dealerId, reason] }));
+  return r[0] ? refOf(r[0].id) : null;
+}
+
+/* ------------------------------------------------------------- Stripe activity log (webhooks + agents) */
+// One row per Stripe event or agent action worth showing on the dashboard. event_id is unique, so a
+// redelivered webhook is recorded (and acted on) once.
+async function activityDb() {
+  const db = await followupDb();
+  await db.execute(`CREATE TABLE IF NOT EXISTS stripe_activity (event_id TEXT PRIMARY KEY, created_at TEXT, type TEXT,
+    dealer_id TEXT, dealer_name TEXT, invoice_number TEXT, amount REAL, detail TEXT)`);
+  return db;
+}
+export async function logActivity(a: { event_id: string; type: string; dealer_id?: string; dealer_name?: string; invoice_number?: string; amount?: number | null; detail?: string }): Promise<boolean> {
+  const db = await activityDb();
+  const seen = rowsOf(await db.execute({ sql: `SELECT event_id FROM stripe_activity WHERE event_id = ?`, args: [a.event_id] }));
+  if (seen.length) return false;
+  await db.execute({ sql: `INSERT INTO stripe_activity (event_id, created_at, type, dealer_id, dealer_name, invoice_number, amount, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [a.event_id, new Date().toISOString(), a.type, a.dealer_id ?? "", a.dealer_name ?? "", a.invoice_number ?? "", a.amount ?? null, (a.detail ?? "").slice(0, 600)] });
+  return true;
+}
+export async function invoicesWithActivity(type: string): Promise<Set<string>> {
+  try { return new Set(rowsOf(await (await activityDb()).execute({ sql: `SELECT DISTINCT invoice_number FROM stripe_activity WHERE type = ?`, args: [type] })).map((r) => r.invoice_number)); }
+  catch (_e) { return new Set(); }
+}
+export async function recentActivity(limit = 25): Promise<any[]> {
+  try { return rowsOf(await (await activityDb()).execute({ sql: `SELECT * FROM stripe_activity ORDER BY created_at DESC LIMIT ?`, args: [limit] })); }
+  catch (_e) { return []; }
+}
+
+// Called from the Stripe webhook: when a dealer's payment goes through, close their open payment follow-ups.
+export async function resolveFollowUps(dealerId: string, reason: string, note: string): Promise<string[]> {
+  if (!dealerId) return [];
+  const db = await followupDb();
+  const open = rowsOf(await db.execute({ sql: `SELECT id, summary FROM followups WHERE dealer_id = ? AND reason = ? AND status = 'open'`, args: [dealerId, reason] }));
+  for (const r of open)
+    await db.execute({ sql: `UPDATE followups SET status = 'resolved', summary = ? WHERE id = ?`, args: [`${r.summary} [Resolved: ${note}]`.slice(0, 800), r.id] });
+  return open.map((r) => refOf(r.id));
+}
+
+export async function followupCounts(): Promise<{ open: number; resolved: number; byReason: Record<string, number> }> {
+  try {
+    const rows = rowsOf(await (await followupDb()).execute(`SELECT reason, status, COUNT(*) AS n FROM followups GROUP BY reason, status`));
+    const byReason: Record<string, number> = {};
+    let open = 0, resolved = 0;
+    for (const r of rows) {
+      if (r.status === "open") { open += Number(r.n); byReason[r.reason] = (byReason[r.reason] ?? 0) + Number(r.n); }
+      else resolved += Number(r.n);
+    }
+    return { open, resolved, byReason };
+  } catch (_e) { return { open: 0, resolved: 0, byReason: {} }; }
+}
+
 // GET /followups  -> the open follow-up queue as a simple page
 export async function followupsPage(): Promise<Response> {
   const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));

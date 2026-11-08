@@ -1,0 +1,96 @@
+{
+  "type": "webhook",
+  "name": "buy_print_credits",
+  "description": "Sells prepaid print credit for managed print page charges, in blocks of $100, $250, or $500, billed as a one-time Stripe invoice; Stripe adds the credit when it is paid. First call with confirmed false: it reads back the purchase. Call again with confirmed true only after the caller clearly says yes. Read back the spoken_summary word for word.",
+  "disable_interruptions": false,
+  "interruption_mode": "allow",
+  "force_pre_tool_speech": false,
+  "pre_tool_speech": "auto",
+  "tool_call_sound": null,
+  "tool_call_sound_behavior": "auto",
+  "tool_error_handling_mode": "auto",
+  "execution_mode": "immediate",
+  "follow_redirects": false,
+  "follow_redirects_allowed_domains": [],
+  "api_schema": {
+    "url": "https://YOUR-STRIPE-VAL.web.val.run/credits/buy",
+    "method": "POST",
+    "path_params_schema": [],
+    "query_params_schema": [],
+    "request_body_schema": {
+      "id": "body",
+      "type": "object",
+      "description": "Request body",
+      "properties": [
+        {
+          "id": "dealer",
+          "type": "object",
+          "description": "The caller's dealer account",
+          "properties": [
+            {
+              "id": "id",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Dealer number, for example D-3002",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": true
+            },
+            {
+              "id": "name",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "Dealer or company name, if the caller gave it",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            }
+          ],
+          "required": true,
+          "dynamic_variable": "",
+          "value_type": "llm_prompt"
+        },
+        {
+          "id": "amount",
+          "type": "number",
+          "value_type": "llm_prompt",
+          "description": "Credit amount in US dollars: 100, 250, or 500",
+          "dynamic_variable": "",
+          "constant_value": "",
+          "enum": null,
+          "is_system_provided": false,
+          "required": true
+        },
+        {
+          "id": "confirmed",
+          "type": "boolean",
+          "value_type": "llm_prompt",
+          "description": "false to read back the purchase first; true only after the caller clearly said yes",
+          "dynamic_variable": "",
+          "constant_value": "",
+          "enum": null,
+          "is_system_provided": false,
+          "required": true
+        }
+      ],
+      "required": false,
+      "dynamic_variable": "",
+      "value_type": "llm_prompt"
+    },
+    "request_headers": [],
+    "content_type": "application/json",
+    "auth_connection": null,
+    "mtls_auth_connection": null,
+    "response_filter": null
+  },
+  "assignments": [],
+  "response_timeout_secs": 30,
+  "dynamic_variables": {
+    "dynamic_variable_placeholders": {}
+  },
+  "response_mocks": []
+}

@@ -69,6 +69,12 @@ async function findPrintSubscription(stripe: Stripe, customerId: string, cat: Pr
   return null;
 }
 
+// Which managed print plan a customer is on, if any (used by prepaid print credits).
+export async function printPlanOf(stripe: Stripe, customerId: string): Promise<{ key: PlanKey; label: string } | null> {
+  const found = await findPrintSubscription(stripe, customerId, await ensurePrintCatalog(stripe));
+  return found ? { key: found.plan.key, label: found.plan.label } : null;
+}
+
 // "Now" for this customer: a test-clock customer lives at the clock's frozen time.
 async function customerNow(stripe: Stripe, customer: Stripe.Customer): Promise<number> {
   const tc = (customer as any).test_clock;
@@ -171,7 +177,11 @@ export async function lookupPrintUsage(body: any) {
   if (preview) {
     // Describe only what Stripe's preview actually contains.
     const baseInPreview = (preview.lines?.data ?? []).filter((l: any) => l.price?.recurring?.usage_type !== "metered").reduce((s, l) => s + l.amount, 0);
+    // Prepaid print credit (Stripe Billing credit grants) is drawn down inside Stripe's own preview.
+    const discounts = (preview.total_discount_amounts ?? []).reduce((s, d) => s + d.amount, 0);
+    const creditApplied = Math.max(0, preview.subtotal - discounts + ((preview as any).tax ?? 0) - preview.total);
     spoken += ` Right now, Stripe estimates your next invoice on ${asDate(periodEnd)} at ${money(preview.total)}`
+      + (creditApplied > 0 ? ` after ${money(creditApplied)} of your prepaid print credit` : "")
       + (baseInPreview > 0 ? `, which includes ${money(baseInPreview)} for next month's base fee.` : `, for this period's page usage.`);
   }
   if (projected > used) spoken += ` At your current pace you'd finish the period around ${pagesFmt(projected)} pages, or roughly ${money(projOverCents)} in overage. That's an estimate.`;

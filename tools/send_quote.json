@@ -1,7 +1,7 @@
 {
   "type": "webhook",
   "name": "send_quote",
-  "description": "Creates a formal Stripe quote (quote number, 30-day expiry, PDF) from a priced order. Call this after calculate_quote once the caller is happy with the price and wants it formalized. Pass the dealer details and the exact lines array returned by calculate_quote. Read back the spoken_summary verbatim, including the quote number. Never invent quote numbers. If the caller gave a promo code and check_promo_code said it is valid, pass it as promo_code. If promo_code is rejected, read back the spoken_summary; the quote is unchanged.",
+  "description": "Creates a formal Stripe quote (quote number, 30-day expiry, PDF) from a priced order. Call this after calculate_quote once the caller is happy with the price and wants it formalized. Pass the dealer details and the exact lines array returned by calculate_quote. Read back the spoken_summary verbatim, including the quote number. Never invent quote numbers. If the caller gave a promo code and check_promo_code said it is valid, pass it as promo_code. If promo_code is rejected, read back the spoken_summary; the quote is unchanged. Stripe Tax calculates sales tax from the ship-to ZIP code: if the result has needs_postal_code true, ask the caller for the ZIP code and call send_quote again with dealer.postal_code.",
   "disable_interruptions": false,
   "interruption_mode": "allow",
   "force_pre_tool_speech": false,
@@ -76,6 +76,17 @@
               "type": "string",
               "value_type": "llm_prompt",
               "description": "Caller's phone number in E.164 format, for example +14175550142",
+              "dynamic_variable": "",
+              "constant_value": "",
+              "enum": null,
+              "is_system_provided": false,
+              "required": false
+            },
+            {
+              "id": "postal_code",
+              "type": "string",
+              "value_type": "llm_prompt",
+              "description": "5-digit ZIP code the order ships to, used by Stripe Tax, for example 78704",
               "dynamic_variable": "",
               "constant_value": "",
               "enum": null,
