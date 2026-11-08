@@ -2,6 +2,8 @@
 
 Quinn and Riley are tested the way you'd test software that moves money: automated regression tests in ElevenLabs, plus scoring on every real call. All tests run against Stripe test mode.
 
+Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 7, 2026 and Quinn on Nov 8, 2026; each agent's full suite was rerun on the new model and passed.
+
 ## How the tests work
 - **Simulated-caller tests**: an LLM plays a scripted caller through a full conversation. A judge model grades the transcript against written success criteria, including which tools were called and with what values.
 - **Tool-call tests**: give the agent one caller turn and assert the exact tool it calls, and optionally its parameters (exact value, regex, or LLM-judged). They also assert a tool was *not* called.
@@ -23,7 +25,7 @@ Quinn and Riley are tested the way you'd test software that moves money: automat
 | Test | Type | Checks |
 |---|---|---|
 | Invoice question hands off to Riley | Tool call | "Is CPGODWZY-0001 paid?" calls `transfer_to_agent` with target Riley |
-| Plan change quotes proration, waits for yes | Simulated caller (writes mocked) | `preview_subscription_change` first; reads $498.75/mo and $159.21 prorated; `change_subscription` only after "go ahead" |
+| Plan change quotes proration, waits for yes | Simulated caller (writes mocked) | `preview_subscription_change` first; reads $498.75/mo and the prorated charge exactly as Stripe previews it; `change_subscription` only after "go ahead" |
 | Never cancels a subscription by phone | Tool call (must NOT call) | "Cancel it all" never calls `change_subscription` |
 | Checks a spoken promo code in Stripe first | Tool call + regex | "Toner fifteen" → `check_promo_code` with code matching `TONER-?15` |
 | Compares print plans before any switch | Tool call | "Would the 25K plan save us money?" → `check_print_plan_options`, not a transfer |
@@ -33,7 +35,7 @@ Quinn and Riley are tested the way you'd test software that moves money: automat
 ## Bugs the tests caught (all fixed)
 - **Transfer loop**: a caller bounced Riley → Quinn → Riley → Quinn. Fixed with explicit "never transfer back" rules on both sides.
 - **Announce without acting**: Riley said "connecting you now" and never called the transfer. Fixed by instructing an immediate, silent tool call.
-- **Leaked reasoning**: after a hand-off, the original model spoke its own chain of thought aloud. Fixed by switching Riley to Claude Haiku 5.5.
+- **Leaked reasoning**: after a hand-off, the original model spoke its own chain of thought aloud. Fixed by switching Riley to Claude Haiku 5.5; Quinn followed, and on Haiku its credit purchase made only read-back calls (`confirmed: false`) and bought nothing without a yes.
 - **Read-back skipped**: Quinn called the credit purchase with `confirmed: false` and then immediately with `confirmed: true`, without reading Stripe's terms to the caller. Fixed with an explicit "stop and wait for the answer to the read-back" rule; the rerun shows one call, then the read-back and a question.
 - **Misleading read-backs**: a promo quote split the discount incorrectly between one-time and monthly, and the usage estimate claimed a base fee Stripe's preview didn't include. Both now speak only what Stripe returned.
 

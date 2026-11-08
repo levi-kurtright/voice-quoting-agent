@@ -96,4 +96,4 @@ The route map is at the top of [`stripe_endpoints.ts`](service/stripe_endpoints.
 - [`TESTS.md`](TESTS.md): test suite and call scoring
 
 ## Built with
-ElevenLabs ElevenAgents · Stripe Billing (test mode) · TypeScript on Val Town · Claude Code
+ElevenLabs ElevenAgents · Claude Haiku 5.5 (both agents' LLM) · Stripe Billing (test mode) · TypeScript on Val Town · Claude Code
