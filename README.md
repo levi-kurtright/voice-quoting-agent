@@ -2,6 +2,8 @@
 
 A voice AI agent that takes a dealer's order over the phone, prices it exactly, and turns the "yes" into real billing objects in **Stripe**: a formal Quote, an invoice, and a subscription. Quinn also applies Stripe-validated promo codes, adds sales tax with Stripe Tax, changes plans mid-term with Stripe proration, right-sizes usage-based print plans from real meter data, sells prepaid print credit on Stripe Billing credits, and offers a billing pause before a cancellation.
 
+The same quoting rules are also open to **AI purchasing agents** over MCP (Model Context Protocol): a buyer's AI assistant can browse the catalog, price an order, and get a formal Stripe quote, but only a person can accept it.
+
 This repo also holds the **Stripe Billing service** shared with its sister agent, [Riley](https://github.com/levi-kurtright/elevenlabs-billing-voice-agent), who answers billing questions, issues credits within policy, explains usage and failed payments, recovers declined card payments on the call, and reads what each plan includes from Stripe Entitlements.
 
 Built for a fictional office products distributor, **Summit Office Supply**. All products, prices, dealers and policies are demo data. Stripe runs in **test mode**: real API calls and real objects, no real money.
@@ -13,6 +15,7 @@ Built for a fictional office products distributor, **Summit Office Supply**. All
 ```
 Caller ──voice──▶ Quinn / Riley (ElevenLabs ElevenAgents, Claude Haiku 5.5)
                        │ webhook tools (JSON schemas in tools/)
+AI buyer ──MCP──▶ POST /mcp (service/mcp.ts): catalog, pricing, formal quotes, quote status
                        ▼
         Pricing service (service/pricing_api.ts)         catalog, volume tiers, approval rules
         Stripe service  (service/stripe_endpoints.ts …)  Val Town HTTP val, TypeScript
@@ -41,6 +44,7 @@ Caller ◀──voice── spoken_summary read back word for word
 | Add or remove units mid-term | Subscription update + proration | Preview first, caller hears the prorated amount, change bills exactly that |
 | Print plan right-sizing | Billing meters + subscription schedules | Honest recommendation (including "stay on your plan"); switches start next period |
 | Pause instead of cancel | Pause payment collection (`void`, auto-resume) | Offered once when a dealer wants to cancel a toner subscription; 1 or 2 months, once a year; reads back the skipped invoice dates and restart date, pauses only on a yes; print plans and cancellations go to a specialist |
+| Quotes for AI purchasing agents | MCP server + Stripe Quotes | Prices recomputed from SKUs and quantities (a buyer agent can't send its own prices); existing dealers only; over-limit discounts go to a manager; AI can't accept; 10 AI quotes per dealer per day; every quote logged |
 | Billing questions | Agent-to-agent transfer | Hands off to Riley in one step, no bounce-back |
 | Anything it can't do | Tracked follow-up | Logs a ticket with a reference number before promising a callback |
 
@@ -53,6 +57,7 @@ Caller ◀──voice── spoken_summary read back word for word
 | [`service/recovery.ts`](service/recovery.ts) | Failed card payments, Stripe retries, Stripe-emailed payment links, on-demand retry after a card update |
 | [`service/native.ts`](service/native.ts) | Stripe webhooks, prepaid print credits (Billing credit grants), one-time Stripe Tax / portal / webhook / Entitlements setup |
 | [`service/plans.ts`](service/plans.ts) | What each plan includes (Stripe Entitlements features), pausing a toner subscription instead of canceling |
+| [`service/mcp.ts`](service/mcp.ts) | `POST /mcp`: MCP server for AI purchasing agents (catalog, exact pricing, formal Stripe quotes, quote status) |
 | [`service/dashboard.ts`](service/dashboard.ts) | `GET /dashboard`: live revenue view from Stripe plus the call logs |
 | [`service/followups.ts`](service/followups.ts) | Tracked specialist follow-ups (Val Town SQLite) and the `GET /followups` queue |
 | [`service/pricing_api.ts`](service/pricing_api.ts) | Deterministic pricing: catalog, volume tiers, delivery, approval rules |
@@ -66,6 +71,19 @@ The route map is at the top of [`stripe_endpoints.ts`](service/stripe_endpoints.
 4. In ElevenLabs, create webhook tools from `tools/*.json`, replacing `YOUR-STRIPE-VAL` / `YOUR-PRICING-VAL` with your val URLs.
 5. Use [`system_prompt.txt`](system_prompt.txt) as the agent's system prompt.
 6. The admin routes (`/usage/setup`, `/usage/report`, `/demo/*`) create demo data, so they require the admin token and stay closed when `ADMIN_TOKEN` isn't set.
+7. `service/mcp.ts` imports the pricing val by URL; point that import at your own pricing val.
+
+## AI purchasing agents (MCP)
+`POST /mcp` is a remote MCP server (Streamable HTTP, stateless). Add `https://YOUR-STRIPE-VAL.web.val.run/mcp` as a custom connector in Claude (or any MCP client), then ask, for example: *"I'm buying for dealer D-1042. Price 2 sit-stand desks and toner for 2 printers, shipped to 78704, and get me a formal quote."*
+
+| Tool | What it does | Writes? |
+|---|---|---|
+| `get_catalog` | SKUs, list prices, billing, volume discount tiers | No |
+| `price_order` | Exact net prices, delivery, approval rules, optional promo check against Stripe | No |
+| `request_quote` | Formal Stripe quote with Stripe Tax and PDF; over-limit orders become a manager follow-up instead | Creates a quote (never accepts) |
+| `get_quote_status` | Status, totals, expiry, PDF, and the invoice once a person accepts | No |
+
+Guardrails: the server reprices every request from SKUs and quantities, acts only for existing dealer accounts, returns the same quote when an agent retries the same request, caps AI quotes at 10 per dealer per day, and logs each quote to the dashboard. Accepting a quote stays with a person at the dealer (by phone with Quinn, or through their Summit rep). For production, set `MCP_BUYER_KEYS` to require a per-dealer key; without it the endpoint has the same trust as the phone line, where a dealer number identifies the account and nothing binding happens without a person.
 
 ## Pricing rules (demo)
 | Rule | Detail |
@@ -91,6 +109,9 @@ The route map is at the top of [`stripe_endpoints.ts`](service/stripe_endpoints.
 - Pause instead of cancel: "8 printers, one month" → read back "Stripe will skip the December 7 invoice; billing restarts with the January 7 invoice at $266.00 a month"; on yes, Stripe set `pause_collection` (void, auto-resume the day after the skipped renewal); a repeated yes returned "already paused" instead of pausing twice
 - Plan features: 7 Stripe Entitlements features attached to the catalog; Riley reads Lakeside's 5K plan (5,000 pages, toner, next-business-day repair) and what the 25K plan adds
 - Admin routes return 401 without the admin token; agent tool routes are unaffected
+- AI buyer over MCP: 2 sit-stand desks + toner for 2 printers to Austin 78704 → Stripe quote QT-CPGODWZY-0002-1, **$1,248** one-time (including $150 delivery) + **$70**/mo, Stripe Tax **$108.74**, first invoice **$1,426.74**; the same request again returned the same quote
+- AI buyer asked for a 12% extra discount → no quote; logged for a manager as FU-1005
+- A price sent by the agent (`unit_net: 1`) was ignored; an unknown dealer, an unknown SKU, and another dealer's quote number were all refused
 
 ## Testing
 18 automated ElevenLabs tests across both agents (simulated callers and tool-call checks), plus post-call scoring on every real call. Tools that write to Stripe are mocked in tests. See [`TESTS.md`](TESTS.md).

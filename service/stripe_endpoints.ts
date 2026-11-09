@@ -9,6 +9,7 @@
 //   native.ts            Stripe webhooks, prepaid print credits (Billing credit grants), Stripe Tax + webhook setup
 //   plans.ts             plan features (Stripe Entitlements), pausing a toner subscription instead of canceling
 //   dashboard.ts         GET /dashboard: live revenue view from Stripe and the call logs
+//   mcp.ts               POST /mcp: MCP server so AI purchasing agents can price orders and request Stripe quotes
 //
 // Routes (POST unless noted). Every spoken answer is built from Stripe's own fields.
 //   /                     Quinn  create an invoice (+ subscription) directly from a confirmed quote
@@ -34,12 +35,14 @@
 //   /followup             both   log a tracked specialist follow-up;  GET /followups lists them
 //   /stripe/webhook       Stripe invoice.paid / invoice.payment_failed -> follow-ups, credit grants, activity log
 //   GET /dashboard               live revenue dashboard
+//   /mcp                  AI buyers  MCP server: catalog, exact pricing, formal Stripe quotes, quote status (never accepts)
 //   /usage/setup, /usage/report, /demo/clock, /demo/dunning, /demo/stripe-setup, /demo/pay-invoice   admin + simulated printer feed (test mode)
 //
 // Env vars:  STRIPE_SECRET_KEY = sk_test_...   (TEST mode). Never hard-code it.
 //            ADMIN_TOKEN       = a long random string. Admin routes require "Authorization: Bearer <ADMIN_TOKEN>";
 //                                without it set they stay closed.
 //            STRIPE_WEBHOOK_SECRET = whsec_...  (optional) verify webhook signatures instead of re-fetching events.
+//            MCP_BUYER_KEYS    = (optional) {"<key>": "D-1042"}: require a per-dealer key on /mcp (see mcp.ts).
 // Write calls use Stripe idempotency keys, so a retried "yes" never bills twice.
 
 import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, isAdmin, money, productFor } from "./core.ts";
@@ -49,6 +52,7 @@ import { changePrintPlan, demoClock, explainUsageInvoice, lookupPrintUsage, prin
 import { demoDunning, paymentFailureLine, retryPayment, sendPaymentLink } from "./recovery.ts";
 import { buyPrintCredits, demoPayInvoice, handleStripeWebhook, lookupPrintCredits, stripeSetup, taxActive } from "./native.ts";
 import { dashboardPage } from "./dashboard.ts";
+import { handleMcp } from "./mcp.ts";
 
 /* ---------------------------------------------------------------- Quinn: create invoice */
 
@@ -269,6 +273,10 @@ async function createStripeQuote(body: any) {
   if (!lines.length) throw new Error("No lines to quote");
   const promoWanted = spokenCode(body?.promo_code ?? "");
   const customerKey: KeyFn = (step) => ({ idempotencyKey: `quinn:${quoteId}:${step}` });
+  // Quotes requested by an AI purchasing agent over MCP (mcp.ts) are tagged so Stripe and the dashboard can tell them apart.
+  const viaAI = body?.channel === "ai_buyer";
+  const source = viaAI ? "ai_buyer_mcp" : "quinn_voice_agent";
+  const buyerRef = viaAI && body?.buyer_reference ? { buyer_reference: String(body.buyer_reference).slice(0, 100) } : {};
 
   const customer = await findOrCreateCustomer(stripe, dealer, customerKey);
 
@@ -331,11 +339,11 @@ async function createStripeQuote(body: any) {
     customer: customer.id, line_items,
     collection_method: "send_invoice", invoice_settings: { days_until_due: 30 },
     header: "Summit Office Supply order quote",
-    description: `Quoted by phone via Quinn. Net prices${discounts ? ` include: ${discounts}` : ""}.${promo?.valid ? ` Promo ${promo.code}: ${promo.terms}.` : ""}${taxOn ? " Sales tax calculated by Stripe Tax." : " Prices exclude tax."}`.slice(0, 500),
+    description: `${viaAI ? "Requested by an AI purchasing agent (MCP)" : "Quoted by phone via Quinn"}. Net prices${discounts ? ` include: ${discounts}` : ""}.${promo?.valid ? ` Promo ${promo.code}: ${promo.terms}.` : ""}${taxOn ? " Sales tax calculated by Stripe Tax." : " Prices exclude tax."}`.slice(0, 500),
     ...(taxOn ? { automatic_tax: { enabled: true } } : {}),
     footer: `Pricing reference ${quoteId}`,
-    metadata: { quote_id: quoteId, source: "quinn_voice_agent", promo_code: promo?.valid ? promo.code : "" },
-    subscription_data: { metadata: { quote_id: quoteId, source: "quinn_voice_agent", term_months: "12", promo_code: promo?.valid ? promo.code : "" } },
+    metadata: { quote_id: quoteId, source, promo_code: promo?.valid ? promo.code : "", ...buyerRef },
+    subscription_data: { metadata: { quote_id: quoteId, source, term_months: "12", promo_code: promo?.valid ? promo.code : "" } },
   };
   let draft: Stripe.Quote;
   if (promo?.valid) {
@@ -785,6 +793,8 @@ export default async function (req: Request): Promise<Response> {
   if (req.method === "GET" && path.endsWith("/followups")) return await followupsPage();
   if (req.method === "GET" && path.endsWith("/dashboard") && key) return await dashboardPage();
   if (req.method === "POST" && path.endsWith("/stripe/webhook") && key) return await handleStripeWebhook(req);
+  if (path.endsWith("/mcp"))
+    return key ? await handleMcp(req, { createQuote: createStripeQuote, checkPromo, origin: ORIGIN }) : json({ error: "STRIPE_SECRET_KEY is not set" }, 500);
 
   if (req.method !== "POST")
     return json({ service: "Summit Office Supply Stripe endpoints", routes: {
@@ -811,6 +821,7 @@ export default async function (req: Request): Promise<Response> {
       "POST /followup": "Quinn and Riley: log a tracked specialist follow-up",
       "GET /followups": "Open follow-up queue (HTML)",
       "GET /dashboard": "Live revenue dashboard (HTML)",
+      "POST /mcp": "AI buyers: MCP server (catalog, pricing, formal Stripe quotes, quote status; never accepts)",
       "POST /credits/buy": "Quinn: sell prepaid print credit (confirmed: true to invoice)",
       "POST /credits": "Riley: prepaid print credit balance (read-only)",
       "POST /payment/link": "Riley: have Stripe email the invoice's secure payment page",

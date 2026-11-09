@@ -53,6 +53,7 @@ export async function dashboardPage(): Promise<Response> {
   const qBy = (st: string) => quotes.filter((q) => q.status === st);
   const accepted = qBy("accepted");
   const acceptedValue = accepted.reduce((s, q) => s + (q.amount_total ?? 0), 0);
+  const aiQuotes = quotes.filter((q) => q.metadata?.source === "ai_buyer_mcp");
 
   const cnTotal = creditNotes.filter((c) => c.status !== "void").reduce((s, c) => s + c.amount, 0);
   const redemptions = promos.data.reduce((s, p) => s + p.times_redeemed, 0);
@@ -66,7 +67,8 @@ export async function dashboardPage(): Promise<Response> {
   const tile = (label: string, value: string, sub = "") => `<div class="tile"><div class="lbl">${esc(label)}</div><div class="val">${esc(value)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>`;
   const when = (iso: string) => new Date(iso).toLocaleString("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   const actLabel: Record<string, string> = { payment_failed: "Card payment failed", payment_recovered: "Payment recovered", invoice_paid: "Invoice paid",
-    payment_link_sent: "Payment link sent (Riley)", credit_topup_invoiced: "Print credit sold (Quinn)", credit_topup_paid: "Print credit paid, granted", payment_retry_succeeded: "Card retried and paid (Riley)" };
+    payment_link_sent: "Payment link sent (Riley)", credit_topup_invoiced: "Print credit sold (Quinn)", credit_topup_paid: "Print credit paid, granted", payment_retry_succeeded: "Card retried and paid (Riley)",
+    ai_quote_created: "Quote requested by an AI buyer (MCP)" };
 
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Summit revenue dashboard</title>
 <style>:root{--bg:#f6f6f3;--card:#fff;--ink:#1c1c1a;--mute:#6b6b66;--line:#e4e4de;--accent:#635bff;--good:#0f7b4f;--bad:#b42318}
@@ -86,9 +88,10 @@ ${tile("Monthly recurring revenue", money(mrr), `${live.length} live subscriptio
 ${tile("Usage-billed plans", String(metered), "managed print, metered pages")}
 ${tile("Prepaid print credit granted", money(granted), "Stripe Billing credits")}
 </div>
-<h2>Quote to cash (Quinn)</h2><div class="grid">
+<h2>Quote to cash (Quinn and AI buyers)</h2><div class="grid">
 ${tile("Quotes accepted", String(accepted.length), `${money(acceptedValue)} first-invoice value`)}
 ${tile("Open quotes", String(qBy("open").length), "waiting on the dealer's yes")}
+${tile("Quotes from AI buyers", String(aiQuotes.length), `${aiQuotes.filter((q) => q.status === "accepted").length} accepted by a person (MCP)`)}
 ${tile("Promo redemptions", String(redemptions), "Stripe-validated codes")}
 ${tile("Collected", money(collected), "paid invoices")}
 </div>
