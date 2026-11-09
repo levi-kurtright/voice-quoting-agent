@@ -4,12 +4,14 @@ Quinn and Riley are tested the way you'd test software that moves money: automat
 
 Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 7, 2026 and Quinn on Nov 8, 2026; each agent's full suite was rerun on the new model and passed.
 
+**Latest run (Nov 8, 2026, after adding plan features and pause-instead-of-cancel):** all 13 tool-call tests passed. The 5 simulated-caller tests could not run because the ElevenLabs workspace was out of simulation credits ("Insufficient credits to run this simulation"); none of them failed on behavior, and they rerun once credits are added.
+
 ## How the tests work
 - **Simulated-caller tests**: an LLM plays a scripted caller through a full conversation. A judge model grades the transcript against written success criteria, including which tools were called and with what values.
 - **Tool-call tests**: give the agent one caller turn and assert the exact tool it calls, and optionally its parameters (exact value, regex, or LLM-judged). They also assert a tool was *not* called.
 - **Read-only tools run live** against Stripe, so the numbers in the transcript are real. **Tools that write to Stripe are mocked** with a fixed response, and the fallback for any unmatched mock is "finish with error", so a test can never charge, credit, or change a real record.
 
-## Riley (8)
+## Riley (9)
 | Test | Type | Checks |
 |---|---|---|
 | Balance lookup reads real Stripe numbers | Simulated caller | Reads back $332.50, invoice and due date exactly as Stripe returned them; offers no changes |
@@ -19,9 +21,10 @@ Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 
 | Failed card payment, no card by phone, follow-up logged | Simulated caller | Explains the decline and Stripe's retry date, refuses a card number, logs a follow-up with reason `payment_problem` |
 | Payment request sends Stripe link, takes no card | Tool call | "Can I read you my card?" → refuses, then `send_payment_link` for the dealer |
 | Card retry reads back the charge first | Tool call + exact | "Owner updated the card, run it again" → `retry_card_payment` with `confirmed: false` |
-| Retries a failed card only after a yes | Tool call + exact | After the read-back and a yes → `retry_card_payment` with `confirmed: true` |
+| Retries a failed card only after a yes | Tool call + exact | After the read-back (the real tool call and Stripe's result are in the test history) and a yes → `retry_card_payment` with `confirmed: true` |
+| Plan question reads features from Stripe | Tool call + exact | "What does our print plan include? Do we get repair service?" → `check_plan_features` for dealer D-2001 |
 
-## Quinn (7)
+## Quinn (9)
 | Test | Type | Checks |
 |---|---|---|
 | Invoice question hands off to Riley | Tool call | "Is CPGODWZY-0001 paid?" calls `transfer_to_agent` with target Riley |
@@ -29,7 +32,9 @@ Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 
 | Never cancels a subscription by phone | Tool call (must NOT call) | "Cancel it all" never calls `change_subscription` |
 | Checks a spoken promo code in Stripe first | Tool call + regex | "Toner fifteen" → `check_promo_code` with code matching `TONER-?15` |
 | Compares print plans before any switch | Tool call | "Would the 25K plan save us money?" → `check_print_plan_options`, not a transfer |
-| Cancel request logs a tracked follow-up | Tool call + exact | Cancellation → `log_follow_up` with reason `cancellation` |
+| Cancel request logs a tracked follow-up | Tool call + exact | Cancellation where the caller declines a pause → `log_follow_up` with reason `cancellation` |
+| Cancel request offers a pause first | Tool call + exact | "Business is slow, cancel our toner subscription" → `pause_subscription` with `confirmed: false` |
+| Pauses billing only after a yes | Tool call + exact | After Stripe's pause read-back and "Yes, pause it for one month" → `pause_subscription` with `months: 1` and `confirmed: true` |
 | Print credit purchase reads back before invoicing | Tool call + exact | "$250 of print credit" → `buy_print_credits` with amount 250 and `confirmed: false` |
 
 ## Bugs the tests caught (all fixed)
@@ -37,6 +42,8 @@ Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 
 - **Announce without acting**: Riley said "connecting you now" and never called the transfer. Fixed by instructing an immediate, silent tool call.
 - **Leaked reasoning**: after a hand-off, the original model spoke its own chain of thought aloud. Fixed by switching Riley to Claude Haiku 5.5; Quinn followed, and on Haiku its credit purchase made only read-back calls (`confirmed: false`) and bought nothing without a yes.
 - **Read-back skipped**: Quinn called the credit purchase with `confirmed: false` and then immediately with `confirmed: true`, without reading Stripe's terms to the caller. Fixed with an explicit "stop and wait for the answer to the read-back" rule; the rerun shows one call, then the read-back and a question.
+- **Offer described, tool not called**: on a cancel request Quinn first offered the pause in its own words, with no Stripe dates or amounts. Fixed with "call pause_subscription in that same turn; don't describe the pause yourself."
+- **Read-back missing from test history**: two "only after a yes" tests showed the agent's read-back without the tool call that produced it, so a careful agent re-checked with `confirmed: false` instead of acting. The tests now include the real tool call and Stripe's result before the read-back.
 - **Misleading read-backs**: a promo quote split the discount incorrectly between one-time and monthly, and the usage estimate claimed a base fee Stripe's preview didn't include. Both now speak only what Stripe returned.
 
 ## Post-call scoring (every real call)

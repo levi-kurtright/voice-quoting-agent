@@ -1,8 +1,8 @@
 # Quinn: Voice Quoting Agent on Stripe Billing
 
-A voice AI agent that takes a dealer's order over the phone, prices it exactly, and turns the "yes" into real billing objects in **Stripe**: a formal Quote, an invoice, and a subscription. Quinn also applies Stripe-validated promo codes, adds sales tax with Stripe Tax, changes plans mid-term with Stripe proration, right-sizes usage-based print plans from real meter data, and sells prepaid print credit on Stripe Billing credits.
+A voice AI agent that takes a dealer's order over the phone, prices it exactly, and turns the "yes" into real billing objects in **Stripe**: a formal Quote, an invoice, and a subscription. Quinn also applies Stripe-validated promo codes, adds sales tax with Stripe Tax, changes plans mid-term with Stripe proration, right-sizes usage-based print plans from real meter data, sells prepaid print credit on Stripe Billing credits, and offers a billing pause before a cancellation.
 
-This repo also holds the **Stripe Billing service** shared with its sister agent, [Riley](https://github.com/levi-kurtright/elevenlabs-billing-voice-agent), who answers billing questions, issues credits within policy, explains usage and failed payments, and recovers declined card payments on the call.
+This repo also holds the **Stripe Billing service** shared with its sister agent, [Riley](https://github.com/levi-kurtright/elevenlabs-billing-voice-agent), who answers billing questions, issues credits within policy, explains usage and failed payments, recovers declined card payments on the call, and reads what each plan includes from Stripe Entitlements.
 
 Built for a fictional office products distributor, **Summit Office Supply**. All products, prices, dealers and policies are demo data. Stripe runs in **test mode**: real API calls and real objects, no real money.
 
@@ -20,7 +20,8 @@ Caller ──voice──▶ Quinn / Riley (ElevenLabs ElevenAgents, Claude Haiku
                        ▼
         Stripe Billing: Quotes · Invoices · Subscriptions · Proration · Promotion codes · Stripe Tax
                         Credit notes · Billing meters · Billing credits · Subscription schedules
-                        Customer portal · Automatic retries · Webhooks · Test clocks
+                        Entitlements · Pause collection · Customer portal · Automatic retries
+                        Webhooks · Test clocks
                        │ webhooks: invoice.paid, invoice.payment_failed
                        ▼
         Follow-up queue, credit grants, activity log ──▶ live revenue dashboard (GET /dashboard)
@@ -39,6 +40,7 @@ Caller ◀──voice── spoken_summary read back word for word
 | Prepaid print credit | Billing credit grants | Blocks of $100 / $250 / $500; reads back the terms and waits for a yes; the credit is granted only when Stripe reports the invoice paid |
 | Add or remove units mid-term | Subscription update + proration | Preview first, caller hears the prorated amount, change bills exactly that |
 | Print plan right-sizing | Billing meters + subscription schedules | Honest recommendation (including "stay on your plan"); switches start next period |
+| Pause instead of cancel | Pause payment collection (`void`, auto-resume) | Offered once when a dealer wants to cancel a toner subscription; 1 or 2 months, once a year; reads back the skipped invoice dates and restart date, pauses only on a yes; print plans and cancellations go to a specialist |
 | Billing questions | Agent-to-agent transfer | Hands off to Riley in one step, no bounce-back |
 | Anything it can't do | Tracked follow-up | Logs a ticket with a reference number before promising a callback |
 
@@ -49,7 +51,8 @@ Caller ◀──voice── spoken_summary read back word for word
 | [`service/core.ts`](service/core.ts) | Shared Stripe client and lookup helpers |
 | [`service/print.ts`](service/print.ts) | Managed print plans on Stripe Billing meters, plan switches, test-clock demo |
 | [`service/recovery.ts`](service/recovery.ts) | Failed card payments, Stripe retries, Stripe-emailed payment links, on-demand retry after a card update |
-| [`service/native.ts`](service/native.ts) | Stripe webhooks, prepaid print credits (Billing credit grants), one-time Stripe Tax / portal / webhook setup |
+| [`service/native.ts`](service/native.ts) | Stripe webhooks, prepaid print credits (Billing credit grants), one-time Stripe Tax / portal / webhook / Entitlements setup |
+| [`service/plans.ts`](service/plans.ts) | What each plan includes (Stripe Entitlements features), pausing a toner subscription instead of canceling |
 | [`service/dashboard.ts`](service/dashboard.ts) | `GET /dashboard`: live revenue view from Stripe plus the call logs |
 | [`service/followups.ts`](service/followups.ts) | Tracked specialist follow-ups (Val Town SQLite) and the `GET /followups` queue |
 | [`service/pricing_api.ts`](service/pricing_api.ts) | Deterministic pricing: catalog, volume tiers, delivery, approval rules |
@@ -58,11 +61,11 @@ The route map is at the top of [`stripe_endpoints.ts`](service/stripe_endpoints.
 
 ### Run it yourself
 1. Create a Val Town project with the files in `service/` (the HTTP entry point is `stripe_endpoints.ts`; `pricing_api.ts` is its own HTTP val).
-2. Add an env var `STRIPE_SECRET_KEY` with a Stripe **test** key. Never hard-code it.
-3. `POST /demo/stripe-setup` once: it sets up Stripe Tax (head office + a Texas registration), the customer portal, and the webhook endpoint. Webhook events are verified by re-fetching them from Stripe, or by signature if you add `STRIPE_WEBHOOK_SECRET`.
+2. Add env vars: `STRIPE_SECRET_KEY` with a Stripe **test** key, and `ADMIN_TOKEN` with a long random string. Never hard-code either.
+3. `POST /demo/stripe-setup` once, with `Authorization: Bearer <ADMIN_TOKEN>`: it sets up Stripe Tax (head office + a Texas registration), the customer portal, the webhook endpoint, and the plan features (Stripe Entitlements). Webhook events are verified by signature when `STRIPE_WEBHOOK_SECRET` is set (copy it from the endpoint in the Stripe Dashboard), otherwise by re-fetching each event from Stripe.
 4. In ElevenLabs, create webhook tools from `tools/*.json`, replacing `YOUR-STRIPE-VAL` / `YOUR-PRICING-VAL` with your val URLs.
 5. Use [`system_prompt.txt`](system_prompt.txt) as the agent's system prompt.
-6. The admin routes (`/usage/setup`, `/usage/report`, `/demo/*`) create demo data in test mode. Gate or remove them before exposing the service publicly.
+6. The admin routes (`/usage/setup`, `/usage/report`, `/demo/*`) create demo data, so they require the admin token and stay closed when `ADMIN_TOKEN` isn't set.
 
 ## Pricing rules (demo)
 | Rule | Detail |
@@ -85,9 +88,12 @@ The route map is at the top of [`stripe_endpoints.ts`](service/stripe_endpoints.
 - Prepaid credit: $100 sold → invoice paid → webhook granted the credit → Stripe's next-invoice estimate for Lakeside fell from **$53.59 to $0.00**, which Riley explains
 - Card recovery: decline → webhook opened a follow-up → owner updated the card → Riley had Stripe retry on the call → paid → webhook closed the follow-up automatically
 - Live dashboard: recurring revenue, quotes won, open receivables, failed and recovered payments, credits, sales tax, follow-ups
+- Pause instead of cancel: "8 printers, one month" → read back "Stripe will skip the December 7 invoice; billing restarts with the January 7 invoice at $266.00 a month"; on yes, Stripe set `pause_collection` (void, auto-resume the day after the skipped renewal); a repeated yes returned "already paused" instead of pausing twice
+- Plan features: 7 Stripe Entitlements features attached to the catalog; Riley reads Lakeside's 5K plan (5,000 pages, toner, next-business-day repair) and what the 25K plan adds
+- Admin routes return 401 without the admin token; agent tool routes are unaffected
 
 ## Testing
-15 automated ElevenLabs tests across both agents (simulated callers and tool-call checks), plus post-call scoring on every real call. Tools that write to Stripe are mocked in tests. See [`TESTS.md`](TESTS.md).
+18 automated ElevenLabs tests across both agents (simulated callers and tool-call checks), plus post-call scoring on every real call. Tools that write to Stripe are mocked in tests. See [`TESTS.md`](TESTS.md).
 
 ## Files
 - [`system_prompt.txt`](system_prompt.txt): Quinn's prompt, exported from the live agent

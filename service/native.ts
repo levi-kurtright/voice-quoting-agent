@@ -1,10 +1,12 @@
 // Summit Office Supply: Stripe-native plumbing for the Quinn and Riley voice agents.
 //   Stripe webhooks        POST /stripe/webhook   invoice.paid / invoice.payment_failed drive follow-ups, credits, the dashboard
 //   Prepaid print credits  POST /credits/buy (Quinn), POST /credits (Riley)   Stripe Billing credit grants
-//   One-time setup         POST /demo/stripe-setup   Stripe Tax settings + registration, webhook endpoint (test mode)
+//   One-time setup         POST /demo/stripe-setup   Stripe Tax settings + registration, webhook endpoint, customer portal,
+//                                                    plan features (Stripe Entitlements); admin, test mode
 import { Stripe, asDate, findCustomer, getStripe, money, priceIdOf } from "./core.ts";
 import { hasOpenFollowUp, invoicesWithActivity, logActivity, logFollowUp, resolveFollowUps } from "./followups.ts";
 import { printPlanOf } from "./print.ts";
+import { ensurePlanFeatures } from "./plans.ts";
 
 // Billing credits (credit grants) arrived in API version 2024-10-28.acacia; the rest of the service stays on 2024-06-20.
 const CREDITS_API = { apiVersion: "2024-10-28.acacia" } as any;
@@ -54,6 +56,9 @@ export async function stripeSetup(origin: string) {
       await stripe.subscriptions.update(s.id, { payment_settings: { save_default_payment_method: "on_subscription" } });
     out.eastgate_save_card = subs.data.length;
   }
+
+  // Stripe Entitlements: what each catalog product includes (Riley's plan-features answers read these).
+  out.plan_features = await ensurePlanFeatures(stripe);
   return { ok: true, ...out };
 }
 

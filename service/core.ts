@@ -8,6 +8,20 @@ export function getStripe(): Stripe {
   return new Stripe(key, { apiVersion: "2024-06-20" });
 }
 
+// Admin routes (demo setup, the simulated printer feed) require the ADMIN_TOKEN env var, sent as
+// "Authorization: Bearer <token>". With no ADMIN_TOKEN set they stay closed. Comparing SHA-256 digests
+// keeps the check's timing independent of how much of the token matched.
+export async function isAdmin(req: Request): Promise<boolean> {
+  const want = Deno.env.get("ADMIN_TOKEN") ?? "";
+  const got = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+  if (!want || !got) return false;
+  const digest = async (s: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
+  const [a, b] = await Promise.all([digest(want), digest(got)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
 export const cents = (n: number) => Math.round(Number(n) * 100);
 export const money = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const asDate = (unix?: number | null) =>

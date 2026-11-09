@@ -7,6 +7,7 @@
 //   recovery.ts          failed card payments, Stripe retries, recovery test-clock demo
 //   followups.ts         tracked specialist follow-ups + Stripe activity log (Val Town SQLite), GET /followups
 //   native.ts            Stripe webhooks, prepaid print credits (Billing credit grants), Stripe Tax + webhook setup
+//   plans.ts             plan features (Stripe Entitlements), pausing a toner subscription instead of canceling
 //   dashboard.ts         GET /dashboard: live revenue view from Stripe and the call logs
 //
 // Routes (POST unless noted). Every spoken answer is built from Stripe's own fields.
@@ -17,6 +18,8 @@
 //   /promo/check          Quinn  validate a promotion code (read-only)
 //   /subscription/preview Quinn  price a quantity change with Stripe proration (read-only)
 //   /subscription/change  Quinn  apply it; prorated difference invoiced immediately
+//   /subscription/pause   Quinn  pause a toner subscription for 1 or 2 billing months instead of canceling (confirmed: true)
+//   /plan/features        Riley  what the dealer's plans include, from Stripe Entitlements features (read-only)
 //   /usage/plan-options   Quinn  compare this period on the 5K and 25K print plans (read-only)
 //   /usage/plan-change    Quinn  switch print plans at the next billing period (subscription schedule)
 //   /status               Riley  invoice status, usage breakdown, failed-payment explanation (read-only)
@@ -33,10 +36,14 @@
 //   GET /dashboard               live revenue dashboard
 //   /usage/setup, /usage/report, /demo/clock, /demo/dunning, /demo/stripe-setup, /demo/pay-invoice   admin + simulated printer feed (test mode)
 //
-// Requires env var:  STRIPE_SECRET_KEY = sk_test_...   (TEST mode). Never hard-code it.
+// Env vars:  STRIPE_SECRET_KEY = sk_test_...   (TEST mode). Never hard-code it.
+//            ADMIN_TOKEN       = a long random string. Admin routes require "Authorization: Bearer <ADMIN_TOKEN>";
+//                                without it set they stay closed.
+//            STRIPE_WEBHOOK_SECRET = whsec_...  (optional) verify webhook signatures instead of re-fetching events.
 // Write calls use Stripe idempotency keys, so a retried "yes" never bills twice.
 
-import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, money, productFor } from "./core.ts";
+import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, isAdmin, money, productFor } from "./core.ts";
+import { lookupPlanFeatures, pauseSubscription } from "./plans.ts";
 import { followupsPage, logFollowUp } from "./followups.ts";
 import { changePrintPlan, demoClock, explainUsageInvoice, lookupPrintUsage, printPlanOptions, reportPrintUsage, setupPrintPlan } from "./print.ts";
 import { demoDunning, paymentFailureLine, retryPayment, sendPaymentLink } from "./recovery.ts";
@@ -567,6 +574,8 @@ async function lookupSubscriptions(body: any) {
       started: asDate(s.start_date),
       next_invoice_date: asDate((s as any).current_period_end ?? (s.items.data[0] as any)?.current_period_end),
       cancel_at_period_end: s.cancel_at_period_end, term_months: s.metadata?.term_months ?? null,
+      billing_paused: !!s.pause_collection,
+      billing_restarts_with: s.pause_collection ? asDate(Number(s.metadata?.pause_restarts_with) || s.pause_collection.resumes_at) : null,
     });
   }
 
@@ -581,7 +590,9 @@ async function lookupSubscriptions(body: any) {
         : `${i.product}, ${i.quantity} at ${money(cents(i.unit_amount))} each`).join("; ");
       const usage = s.items.some((i) => i.metered);
       spoken += ` ${what}, for ${money(cents(s.recurring_total))} a month${usage ? " plus usage" : ""}`;
-      spoken += s.cancel_at_period_end ? `. It's set to end on ${s.next_invoice_date}.` : `. The next invoice is on ${s.next_invoice_date}.`;
+      spoken += s.cancel_at_period_end ? `. It's set to end on ${s.next_invoice_date}.`
+        : s.billing_paused ? `. Billing is paused${s.billing_restarts_with ? ` and restarts with the ${s.billing_restarts_with} invoice` : ""}.`
+        : `. The next invoice is on ${s.next_invoice_date}.`;
       if (s.status === "past_due" || s.status === "unpaid") spoken += ` This subscription has a past-due balance.`;
     }
   }
@@ -752,6 +763,9 @@ async function issueCredit(body: any) {
 
 /* ------------------------------------------------------------------------------ router */
 
+// These create demo data or simulate the printer feed, so they need ADMIN_TOKEN (see isAdmin in core.ts).
+const ADMIN_ROUTES = ["/usage/setup", "/usage/report", "/demo/clock", "/demo/dunning", "/demo/stripe-setup", "/demo/pay-invoice"];
+
 export default async function (req: Request): Promise<Response> {
   const json = (data: unknown, status = 200) =>
     new Response(JSON.stringify(data, null, 2), { status, headers: { "content-type": "application/json" } });
@@ -782,6 +796,8 @@ export default async function (req: Request): Promise<Response> {
       "POST /subscriptions": "Riley: subscription details (read-only)",
       "POST /subscription/preview": "Quinn: preview a quantity change with Stripe proration (no writes)",
       "POST /subscription/change": "Quinn: apply a quantity change (prorated invoice)",
+      "POST /subscription/pause": "Quinn: pause a toner subscription for 1 or 2 billing months (confirmed: true to pause)",
+      "POST /plan/features": "Riley: what the dealer's plans include, from Stripe Entitlements (read-only)",
       "POST /promo/check": "Quinn: validate a promotion code (read-only)",
       "POST /credit/preview": "Riley: preview a credit note within phone policy (no writes)",
       "POST /credit/issue": "Riley: issue the credit note after the caller confirms",
@@ -803,6 +819,8 @@ export default async function (req: Request): Promise<Response> {
       "POST /demo/stripe-setup": "Admin: Stripe Tax settings + registration, webhook endpoint",
       "POST /demo/pay-invoice": "Admin: mark an emailed invoice paid by check (test mode)",
     } });
+  if (ADMIN_ROUTES.some((r) => path.endsWith(r)) && !(await isAdmin(req)))
+    return json({ error: "Admin route: send Authorization: Bearer <ADMIN_TOKEN>" }, 401);
   if (!key) return json({ error: "STRIPE_SECRET_KEY is not set" }, 500);
   let body: any = {};
   try { body = await req.json(); } catch { return json({ error: "Body must be JSON" }, 400); }
@@ -812,6 +830,8 @@ export default async function (req: Request): Promise<Response> {
       : path.endsWith("/quote") ? await createStripeQuote(body)
       : path.endsWith("/subscription/preview") ? await previewSubscriptionChange(body)
       : path.endsWith("/subscription/change") ? await applySubscriptionChange(body)
+      : path.endsWith("/subscription/pause") ? await pauseSubscription(body)
+      : path.endsWith("/plan/features") ? await lookupPlanFeatures(body)
       : path.endsWith("/subscriptions") ? await lookupSubscriptions(body)
       : path.endsWith("/promo/check") ? await checkPromo(body)
       : path.endsWith("/credit/preview") ? await previewCredit(body)
