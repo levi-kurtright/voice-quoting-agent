@@ -4,7 +4,7 @@ Quinn and Riley are tested the way you'd test software that moves money: automat
 
 Both agents run on Claude Haiku 5.5. Riley moved from DeepSeek Flash 4.1 on Nov 7, 2026 and Quinn on Nov 8, 2026; each agent's full suite was rerun on the new model and passed.
 
-**Latest run (Nov 8, 2026, after adding plan features and pause-instead-of-cancel):** all 13 tool-call tests passed. The 5 simulated-caller tests could not run because the ElevenLabs workspace was out of simulation credits ("Insufficient credits to run this simulation"); none of them failed on behavior, and they rerun once credits are added.
+**Latest run (Nov 9, 2026):** all 18 tests passed, 9 for Quinn and 9 for Riley, including the 5 simulated-caller tests that the Nov 8 run couldn't execute because the workspace was out of ElevenLabs credits. The full suite used about 1,550 credits.
 
 ## How the tests work
 - **Simulated-caller tests**: an LLM plays a scripted caller through a full conversation. A judge model grades the transcript against written success criteria, including which tools were called and with what values.
