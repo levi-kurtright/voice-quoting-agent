@@ -102,7 +102,7 @@ Guardrails: the server reprices every request from SKUs and quantities, acts onl
 - "Toner fifteen" → TONER15 validated; accepted quote invoiced **$1,671.31** after **$294.94** off; Stripe recorded the redemption
 - 50,700 pages projected → 25K plan saves ~$167/mo, switch scheduled for next period; ~15,000 pages → "stay on 5K"
 - Test clock: when a switch took effect, Stripe billed the old period's 13,600 pages at 5K rates (**$103.20**) and started the new plan on a separate invoice
-- Stripe Tax: 2 desks + 2 toner subscriptions shipped to Austin 78704 → **$52.51** tax (8.25%), first invoice **$689.01**, then **$71.99**/mo including tax; no ZIP → Quinn asks for one
+- Stripe Tax: 2 desks + 2 toner subscriptions shipped to Austin 78704 → $578 + **$150 delivery** + $70/mo, **$65.84** tax (8.25%), first invoice **$863.84**, then **$75.78**/mo including tax; no ZIP → Quinn asks for one
 - Prepaid credit: $100 sold → invoice paid → webhook granted the credit → Stripe's next-invoice estimate for Lakeside fell from **$53.59 to $0.00**, which Riley explains
 - Card recovery: decline → webhook opened a follow-up → owner updated the card → Riley had Stripe retry on the call → paid → webhook closed the follow-up automatically
 - Live dashboard: recurring revenue, quotes won, open receivables, failed and recovered payments, credits, sales tax, follow-ups
@@ -111,7 +111,7 @@ Guardrails: the server reprices every request from SKUs and quantities, acts onl
 - Admin routes return 401 without the admin token; agent tool routes are unaffected
 - AI buyer over MCP: 2 sit-stand desks + toner for 2 printers to Austin 78704 → Stripe quote QT-CPGODWZY-0002-1, **$1,248** one-time (including $150 delivery) + **$70**/mo, Stripe Tax **$108.74**, first invoice **$1,426.74**; the same request again returned the same quote
 - AI buyer asked for a 12% extra discount → no quote; logged for a manager as FU-1005
-- A price sent by the agent (`unit_net: 1`) was ignored; an unknown dealer, an unknown SKU, and another dealer's quote number were all refused
+- Quotes and invoices are repriced from the catalog on the server, by phone and over MCP: a price sent by an agent (`unit_net: 1`) was ignored, small orders now carry the $150 delivery fee on the Stripe quote (it was missing before), and a 12% discount request stops for a manager instead of producing a quote; an unknown dealer, an unknown SKU, and another dealer's quote number were all refused
 
 ## Testing
 18 automated ElevenLabs tests across both agents (simulated callers and tool-call checks), plus post-call scoring on every real call. Tools that write to Stripe are mocked in tests. See [`TESTS.md`](TESTS.md).

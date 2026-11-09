@@ -45,7 +45,7 @@
 //            MCP_BUYER_KEYS    = (optional) {"<key>": "D-1042"}: require a per-dealer key on /mcp (see mcp.ts).
 // Write calls use Stripe idempotency keys, so a retried "yes" never bills twice.
 
-import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, isAdmin, money, productFor } from "./core.ts";
+import { Stripe, asDate, cents, findCustomer, findInvoiceByNumber, getStripe, isAdmin, money, productFor, repriceVoiceLines } from "./core.ts";
 import { lookupPlanFeatures, pauseSubscription } from "./plans.ts";
 import { followupsPage, logFollowUp } from "./followups.ts";
 import { changePrintPlan, demoClock, explainUsageInvoice, lookupPrintUsage, printPlanOptions, reportPrintUsage, setupPrintPlan } from "./print.ts";
@@ -78,13 +78,19 @@ async function findExistingForQuote(stripe: Stripe, quoteId: string) {
   return { invoice: inv?.data[0], subscription: sub?.data[0] };
 }
 
+const approvalLine = (p: any) =>
+  `This order needs a manager's approval before I can write it up: ${(p.approval_reasons ?? []).join("; ")}. I'll log it so a manager can follow up.`;
+
 async function createInvoice(body: any) {
   const stripe = getStripe();
   const dealer = body?.dealer ?? {};
-  const lines: Line[] = Array.isArray(body?.lines) ? body.lines : [];
+  let lines: Line[] = Array.isArray(body?.lines) ? body.lines : [];
   const quoteId: string = String(body?.quote_id ?? "").trim();
   if (!quoteId) throw new Error("quote_id is required, pass the quote_id returned by calculate_quote");
   if (!lines.length) throw new Error("No lines to invoice");
+  const priced = await repriceVoiceLines(lines);
+  if (priced?.approval_required) return { ok: true, approval_required: true, approval_reasons: priced.approval_reasons, spoken_summary: approvalLine(priced) };
+  if (priced) lines = priced.billable;
 
   const existing = await findExistingForQuote(stripe, quoteId);
   if (existing.invoice || existing.subscription) {
@@ -267,10 +273,17 @@ async function checkPromo(body: any) {
 async function createStripeQuote(body: any) {
   const stripe = getStripe();
   const dealer = body?.dealer ?? {};
-  const lines: Line[] = Array.isArray(body?.lines) ? body.lines : [];
+  let lines: Line[] = Array.isArray(body?.lines) ? body.lines : [];
   const quoteId: string = String(body?.quote_id ?? "").trim();
   if (!quoteId) throw new Error("quote_id is required, pass the quote_id returned by calculate_quote");
   if (!lines.length) throw new Error("No lines to quote");
+  // Voice quotes are repriced from the catalog here, so the Stripe quote carries the pricing rules' exact amounts and
+  // delivery fee. AI-buyer quotes (mcp.ts) arrive already repriced.
+  if (body?.channel !== "ai_buyer") {
+    const priced = await repriceVoiceLines(lines);
+    if (priced?.approval_required) return { ok: true, approval_required: true, approval_reasons: priced.approval_reasons, spoken_summary: approvalLine(priced) };
+    if (priced) lines = priced.billable;
+  }
   const promoWanted = spokenCode(body?.promo_code ?? "");
   const customerKey: KeyFn = (step) => ({ idempotencyKey: `quinn:${quoteId}:${step}` });
   // Quotes requested by an AI purchasing agent over MCP (mcp.ts) are tagged so Stripe and the dashboard can tell them apart.

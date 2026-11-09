@@ -1,6 +1,44 @@
-// Summit Office Supply: shared Stripe helpers for the voice-agent endpoints.
+// Summit Office Supply: shared Stripe helpers and the pricing-service client for the voice-agent endpoints.
 import Stripe from "npm:stripe@^17";
+import pricing from "https://esm.town/v/levikurtright/summit-pricing/main.ts"; // the pricing val (pricing_api.ts in this repo)
 export { Stripe };
+
+/* ------------------------------------------------------------------ pricing service */
+// Quotes and invoices are repriced here from catalog SKUs, so what Stripe bills always matches the pricing rules,
+// delivery included, whatever an agent passes in.
+
+export async function priceSkus(lines: { sku: string; qty: number }[], extra = 0): Promise<any> {
+  const r = await pricing(new Request("https://pricing.internal/quote", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ lines: lines.map((l) => ({ sku: String(l?.sku ?? ""), qty: Math.floor(Number(l?.qty)) })), extra_discount_pct: extra }) }));
+  return await r.json();
+}
+
+export async function pricingCatalog(): Promise<any[]> {
+  return await (await pricing(new Request("https://pricing.internal/catalog"))).json();
+}
+
+// Priced lines as Stripe should bill them: the catalog lines, plus a Delivery line when the order pays for delivery.
+export const billableLines = (p: any) =>
+  [...p.lines, ...(p.delivery_fee > 0 ? [{ product: "Delivery", qty: 1, unit_net: p.delivery_fee, billing: "one_time" }] : [])];
+
+// Voice path: Quinn passes the lines calculate_quote returned (product names, quantities, discounts). Map them back to
+// SKUs and reprice. Returns null if a line can't be matched to the catalog, so the caller keeps the lines it was given.
+export async function repriceVoiceLines(lines: any[]): Promise<any | null> {
+  const norm = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const bySku = new Map<string, string>(), byName = new Map<string, string>();
+  for (const p of await pricingCatalog()) { bySku.set(norm(p.sku), p.sku); byName.set(norm(p.name), p.sku); }
+  const skus: { sku: string; qty: number }[] = [];
+  for (const l of lines) {
+    if (norm(l?.product) === "delivery") continue; // recomputed below
+    const sku = bySku.get(norm(l?.sku)) ?? byName.get(norm(l?.product));
+    if (!sku) return null;
+    skus.push({ sku, qty: Number(l?.qty) });
+  }
+  if (!skus.length) return null;
+  const extra = Math.max(0, ...lines.map((l) => Number(l?.extra_discount_pct) || 0));
+  const p = await priceSkus(skus, extra);
+  return p.errors?.length ? null : { ...p, billable: billableLines(p) };
+}
 
 export function getStripe(): Stripe {
   const key = Deno.env.get("STRIPE_SECRET_KEY");

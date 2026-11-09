@@ -16,8 +16,7 @@
 // "Authorization: Bearer <key>" and can only act for that key's dealer. Without it, the endpoint has the same
 // trust as the phone line: a dealer number identifies the account, and nothing binding happens without a person.
 
-import pricing from "https://esm.town/v/levikurtright/summit-pricing/main.ts"; // the pricing val (pricing_api.ts in this repo)
-import { Stripe, asDate, findCustomer, getStripe, money } from "./core.ts";
+import { Stripe, asDate, billableLines, findCustomer, getStripe, money, priceSkus, pricingCatalog } from "./core.ts";
 import { logActivity, logFollowUp } from "./followups.ts";
 
 type Deps = { createQuote: (body: any) => Promise<any>; checkPromo: (body: any) => Promise<any>; origin: string };
@@ -84,11 +83,7 @@ const TOOLS = [
 
 class ToolError extends Error {}
 
-async function priceLines(lines: any[], extra: number): Promise<Priced> {
-  const r = await pricing(new Request("https://pricing.internal/quote", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ lines: lines.map((l) => ({ sku: String(l?.sku ?? ""), qty: Math.floor(Number(l?.qty)) })), extra_discount_pct: extra }) }));
-  return await r.json();
-}
+const priceLines = (lines: any[], extra: number): Promise<Priced> => priceSkus(lines, extra);
 
 function readLines(args: any): any[] {
   const lines = Array.isArray(args?.lines) ? args.lines : [];
@@ -125,8 +120,7 @@ function pricedView(p: Priced) {
 }
 
 async function getCatalog() {
-  const r = await pricing(new Request("https://pricing.internal/catalog"));
-  const items: any[] = await r.json();
+  const items = await pricingCatalog();
   return {
     products: items.map((p) => ({ sku: p.sku, name: p.name, list_price: p.list_price, billing: p.billing,
       volume_discounts: (p.volume_tiers ?? []).map(([min_qty, pct]: [number, number]) => ({ min_qty, pct })) })),
@@ -183,7 +177,7 @@ async function requestQuote(args: any, deps: Deps, authDealer: string | null) {
   }
 
   // The quote carries exactly what price_order showed, including delivery on small orders.
-  const quoteLines = [...p.lines, ...(p.delivery_fee > 0 ? [{ product: "Delivery", qty: 1, unit_net: p.delivery_fee, billing: "one_time" }] : [])];
+  const quoteLines = billableLines(p);
   const recent = await stripe.quotes.list({ customer: customer.id, limit: 100 });
   const reference = await referenceFor(dealerId, quoteLines, extra, promo, zip);
   const isRepeat = recent.data.some((q) => q.metadata?.quote_id === reference);
